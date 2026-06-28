@@ -61,7 +61,9 @@ export default function ContractDashboard() {
 
   const calculateDuration = (start, end) => {
     if (!end) return '-';
-    const diff = Math.floor((new Date(end) - new Date(start)) / 1000);
+    const startDate = new Date(start.endsWith('Z') ? start : start + 'Z');
+    const endDate = new Date(end.endsWith('Z') ? end : end + 'Z');
+    const diff = Math.floor((endDate - startDate) / 1000);
     if (diff < 60) return `${diff}s`;
     return `${Math.floor(diff / 60)}m ${diff % 60}s`;
   };
@@ -117,8 +119,15 @@ export default function ContractDashboard() {
                   <span className="text-slate-200 font-medium break-all">{contract.filename}</span>
                 </td>
                 <td className="p-4 text-slate-400 text-sm">
-                  <div>{new Date(contract.uploaded_at).toLocaleDateString()}</div>
-                  <div className="text-xs text-slate-500 mt-0.5">{new Date(contract.uploaded_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</div>
+                  {(() => {
+                    const date = new Date(contract.uploaded_at.endsWith('Z') ? contract.uploaded_at : contract.uploaded_at + 'Z');
+                    return (
+                      <>
+                        <div>{date.toLocaleDateString()}</div>
+                        <div className="text-xs text-slate-500 mt-0.5">{date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</div>
+                      </>
+                    );
+                  })()}
                 </td>
                 <td className="p-4 text-slate-400 text-sm font-mono">
                   {calculateDuration(contract.uploaded_at, contract.completed_at)}

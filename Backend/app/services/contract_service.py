@@ -490,7 +490,8 @@ class ContractInferenceService:
                 "You are an expert legal risk analyst. Review the provided contract clauses and identify any legal, "
                 "financial, or business risks (e.g., unlimited liability, one-sided termination, missing governing law, unfavorable terms, etc.). "
                 "Output strictly as a JSON array of objects. Each object must have 'type' (short title of the risk), "
-                "'description' (detailed explanation of why it's a risk), and 'severity' ('High', 'Medium', or 'Low'). "
+                "'description' (detailed explanation of the risk), 'severity' ('High', 'Medium', or 'Low'), "
+                "and 'reasoning' (XAI explanation: precisely why the AI model flagged this as a risk based on standard practice). "
                 "If no risks are found, return []. Do not include markdown formatting or conversational text."
             )
 
@@ -513,6 +514,9 @@ class ContractInferenceService:
                 if isinstance(extracted_risks, list):
                     for r in extracted_risks:
                         if "type" in r and "description" in r and "severity" in r:
+                            # ensure reasoning exists
+                            if "reasoning" not in r:
+                                r["reasoning"] = "Standard risk pattern detected."
                             risk_flags.append(r)
             except Exception as e:
                 logger.error(f"Error during LLM risk extraction: {e}")
@@ -540,7 +544,7 @@ class ContractInferenceService:
         if not hasattr(self, 'llm') or not self.llm:
             return []
             
-        system_prompt = OBLIGATION_EXTRACTOR_SYSTEM_PROMPT + "\n\nOutput strictly as a JSON array of objects with keys: Text, Severity, Deadline, Affected Entity, Category. Do NOT include markdown."
+        system_prompt = OBLIGATION_EXTRACTOR_SYSTEM_PROMPT + "\n\nOutput strictly as a JSON array of objects with keys: Text, Severity, Deadline, Affected Entity, Category, Reasoning (XAI explanation: why this text is a mandatory compliance obligation). Do NOT include markdown."
         
         try:
             # We truncate the text slightly to avoid context limits, focusing on the first 6000 chars which usually contain core obligations

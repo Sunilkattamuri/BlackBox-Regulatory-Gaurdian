@@ -74,7 +74,7 @@ async def upload_contract(
 
 @router.get("/", response_model=List[schemas.ContractResponse])
 def get_contracts(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
-    contracts = db.query(models.Contract).offset(skip).limit(limit).all()
+    contracts = db.query(models.Contract).order_by(models.Contract.id.desc()).offset(skip).limit(limit).all()
     return contracts
 
 @router.delete("/{contract_id}")
