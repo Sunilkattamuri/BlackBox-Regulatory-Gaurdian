@@ -35,6 +35,7 @@ class ContractCreate(ContractBase):
 class ContractResponse(ContractBase):
     id: int
     uploaded_at: datetime
+    completed_at: Optional[datetime] = None
     status: str
     extracted_data: Optional[Dict[str, Any]] = None
     layout_analysis: Optional[Dict[str, Any]] = None

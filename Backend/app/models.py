@@ -41,6 +41,7 @@ class Contract(Base):
     id = Column(Integer, primary_key=True, index=True)
     filename = Column(String, index=True)
     uploaded_at = Column(DateTime(timezone=True), server_default=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
     status = Column(String, default="uploaded")  # uploaded, processing, completed, failed
     extracted_data = Column(JSON, nullable=True)  # Will store clauses, risks
     raw_text = Column(Text, nullable=True)

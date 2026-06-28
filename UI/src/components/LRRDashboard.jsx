@@ -1,36 +1,34 @@
 import React, { useEffect } from 'react';
 import { RefreshCw, ExternalLink, Activity, ArrowRight } from 'lucide-react';
 import { useStore } from '../store/useStore';
+import api from '../api';
 
 export default function LRRDashboard() {
   const { lrrUpdates, setLrrUpdates } = useStore();
 
-  useEffect(() => {
-    if (lrrUpdates.length === 0) {
-      setLrrUpdates([
-        {
-          id: 1,
-          title: "Master Direction - Classification, Valuation and Operation of Investment Portfolio of Commercial Banks",
-          source: "RBI",
-          published_date: new Date().toISOString(),
-          summary: "Updated guidelines on how commercial banks should classify and value their investment portfolios.",
-          obligations: [
-            { policy: "Investment Valuation Policy", impact: "High", action: "Update valuation models for Q3." }
-          ]
-        },
-        {
-          id: 2,
-          title: "Guidelines on Default Loss Guarantee (DLG) in Digital Lending",
-          source: "RBI",
-          published_date: new Date(Date.now() - 86400000).toISOString(), // Yesterday
-          summary: "Regulatory framework for DLG arrangements in digital lending.",
-          obligations: [
-            { policy: "Digital Lending Policy", impact: "Medium", action: "Review DLG agreements with fintech partners." }
-          ]
-        }
-      ]);
+  const fetchUpdates = async () => {
+    try {
+      const response = await api.get('/lrr/');
+      setLrrUpdates(response.data);
+    } catch (error) {
+      console.error('Error fetching LRR updates:', error);
     }
+  };
+
+  useEffect(() => {
+    fetchUpdates();
   }, []);
+
+  const handleSync = async () => {
+    try {
+      const response = await api.get('/lrr/refresh');
+      // Prepend new updates or just re-fetch all
+      fetchUpdates();
+    } catch (error) {
+      console.error('Error syncing feeds:', error);
+      alert('Failed to sync feeds.');
+    }
+  };
 
   return (
     <div className="max-w-5xl mx-auto space-y-8">
@@ -40,7 +38,10 @@ export default function LRRDashboard() {
           <p className="text-slate-400 mt-1">Continuous monitoring of RBI notifications and policy mapping</p>
         </div>
         
-        <button className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg flex items-center gap-2 transition-all border border-white/10 shadow-lg">
+        <button 
+          onClick={handleSync}
+          className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg flex items-center gap-2 transition-all border border-white/10 shadow-lg"
+        >
           <RefreshCw className="w-4 h-4" />
           <span className="font-medium text-sm">Sync Feeds</span>
         </button>

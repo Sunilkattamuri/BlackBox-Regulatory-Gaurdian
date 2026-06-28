@@ -226,3 +226,12 @@ models/
 
 # Scratch files / temporary scripts
 Backend/scratch/
+
+# Project specific ignores
+Backend/uploaded_contracts/
+Backend/mlruns/
+scratch/
+*.pdf
+*.docx
+*.png
+~$*

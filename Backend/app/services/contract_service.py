@@ -13,13 +13,18 @@ import numpy as np
 from PIL import Image
 from io import BytesIO
 from typing import Dict, Any, List, Optional, Tuple
+import json
+from langchain_ollama import ChatOllama
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_core.messages import SystemMessage, HumanMessage
 from transformers import (
-    pipeline,
-    AutoTokenizer,
-    AutoModelForQuestionAnswering,
     LayoutLMv3Processor,
     LayoutLMv3ForTokenClassification
 )
+
+from .agents.obligation_extractor import OBLIGATION_EXTRACTOR_SYSTEM_PROMPT
+from .agents.impact_assessor import IMPACT_ASSESSOR_SYSTEM_PROMPT
+from .agents.compliance_reporter import COMPLIANCE_REPORTER_SYSTEM_PROMPT
 
 from ..config import settings
 
@@ -61,23 +66,19 @@ class ContractInferenceService:
     def _load_models(self):
         logger.info("Loading inference models...")
 
-        # 1. Load Legal-BERT QA
-        legal_bert_path = settings.LEGAL_BERT_PATH
-        if os.path.exists(legal_bert_path):
-            try:
-                tokenizer = AutoTokenizer.from_pretrained(legal_bert_path)
-                model = AutoModelForQuestionAnswering.from_pretrained(legal_bert_path)
-                self.qa_pipeline = pipeline(
-                    "question-answering", model=model, tokenizer=tokenizer,
-                    device=self.device
-                )
-                logger.info(f"Loaded fine-tuned Legal-BERT from {legal_bert_path}")
-            except Exception as e:
-                logger.error(f"Error loading fine-tuned Legal-BERT: {e}. Falling back to base model.")
-                self._load_base_legal_bert()
-        else:
-            logger.info("Fine-tuned Legal-BERT not found. Loading base model.")
-            self._load_base_legal_bert()
+        # 1. Load LLM (Ollama)
+        try:
+            self.llm = ChatOllama(
+                model=settings.LLM_MODEL,
+                temperature=0.0,
+                base_url=settings.LLM_BASE_URL
+            )
+            # Quick check
+            self.llm.invoke([HumanMessage(content="test")])
+            logger.info(f"Loaded LLM: {settings.LLM_MODEL} from {settings.LLM_BASE_URL}")
+        except Exception as e:
+            logger.error(f"Failed to load LLM: {e}")
+            self.llm = None
 
         # 2. Load LayoutLMv3
         layoutlm_path = settings.LAYOUTLMV3_PATH
@@ -108,17 +109,7 @@ class ContractInferenceService:
             logger.info(f"LayoutLMv3 not found at {layoutlm_path}. "
                         "Layout analysis will be skipped.")
 
-    def _load_base_legal_bert(self):
-        """Load the base Legal-BERT model as a fallback."""
-        try:
-            self.qa_pipeline = pipeline(
-                "question-answering",
-                model="nlpaueb/legal-bert-base-uncased",
-                device=self.device,
-            )
-            logger.info("Loaded base Legal-BERT model")
-        except Exception as e:
-            logger.error(f"Failed to load base Legal-BERT: {e}")
+
 
     def extract_text_from_pdf(self, file_path: str) -> Tuple[str, List[Dict[str, Any]]]:
         """
@@ -390,7 +381,7 @@ class ContractInferenceService:
 
     def analyze_contract(self, file_path: str) -> Dict[str, Any]:
         """
-        Main pipeline: OCR → Layout Analysis (LayoutLMv3) → Clause Extraction (Legal-BERT).
+        Main pipeline: OCR → Layout Analysis (LayoutLMv3) → Clause Extraction (LLM).
 
         Returns structured analysis with layout data, extracted clauses, and risk flags.
         """
@@ -403,49 +394,82 @@ class ContractInferenceService:
         # Step 3: Build enhanced context using layout structure
         enhanced_context = self._build_enhanced_context(raw_text, layout_results)
 
-        # Step 4: Define questions based on CUAD standards
-        questions = [
-            "What is the effective date of the contract?",
-            "Who are the parties to the contract?",
-            "What is the governing law?",
-            "Are there any termination clauses?",
-            "Is there a confidentiality or non-disclosure agreement?",
-            "What are the payment terms?",
-            "Are there any indemnification clauses?",
-            "What is the duration or term of the contract?",
-            "Are there any limitation of liability clauses?",
-            "Is there an arbitration or dispute resolution clause?",
-        ]
-
-        # Step 5: Extract clauses using Legal-BERT QA
-        extracted_clauses = {}
-        if self.qa_pipeline and len(enhanced_context.strip()) > 0:
-            for q in questions:
-                try:
-                    ans = self.qa_pipeline(question=q, context=enhanced_context)
-                    extracted_clauses[q] = {
-                        "answer": ans['answer'],
-                        "score": round(ans['score'], 4),
-                    }
-                except Exception as e:
-                    logger.error(f"Error during QA inference for '{q}': {e}")
-                    extracted_clauses[q] = {"answer": "Error extracting", "score": 0.0}
+        # Step 4: Extract clauses using LLM
+        # We use raw_text because LLM extraction handles chunking to get complete context
+        extracted_clauses = self._extract_clauses_with_llm(raw_text)
 
         # Step 6: Generate risk flags
         risk_flags = self._generate_risk_flags(extracted_clauses, layout_results)
 
         # Step 7: Compile layout summary
         layout_summary = self._compile_layout_summary(layout_results)
+        
+        # Step 8: Multi-Agent Pipeline (Obligations -> Impact -> Report)
+        obligations = self._extract_obligations_with_llm(raw_text)
+        impact_assessment = self._assess_impact_with_llm(obligations)
+        compliance_report = self._generate_compliance_report_with_llm(
+            raw_text[:1000], obligations, impact_assessment
+        )
 
         return {
             "raw_text": raw_text[:500] + "... (truncated)" if len(raw_text) > 500 else raw_text,
+            "full_text": raw_text,
             "clauses": extracted_clauses,
             "risk_flags": risk_flags,
             "layout_analysis": layout_summary,
             "pages_analyzed": len(page_data),
             "layout_status": layout_results.get("status", "skipped"),
             "ocr_pages": sum(1 for p in page_data if p.get("ocr_used", False)),
+            "obligations": obligations,
+            "impact_assessment": impact_assessment,
+            "compliance_report": compliance_report,
         }
+
+    def _extract_clauses_with_llm(self, text: str) -> Dict[str, Dict]:
+        """Extracts clauses from the text using LLM and text chunking."""
+        if not hasattr(self, 'llm') or not self.llm:
+            return {"Error": {"answer": "LLM not initialized", "score": 0.0}}
+            
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=4000, 
+            chunk_overlap=400,
+            length_function=len
+        )
+        chunks = splitter.split_text(text)
+        
+        all_clauses = {}
+        
+        system_prompt = (
+            "You are an expert legal AI assistant. Your task is to extract all material clauses from the provided contract text chunk. "
+            "Return the output strictly as a JSON object where keys are the clause names (e.g. 'Governing Law', 'Termination', 'Parties', etc.) "
+            "and values are the extracted text of the clause. If no clauses are found, return {}. Do not include markdown formatting or explanations."
+        )
+        
+        for i, chunk in enumerate(chunks):
+            try:
+                response = self.llm.invoke([
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=f"Extract clauses from this text:\n\n{chunk}")
+                ])
+                import re
+                content = response.content.strip()
+                # Use regex to find the first JSON object block to avoid extra text
+                match = re.search(r'\{[\s\S]*\}', content)
+                if match:
+                    content = match.group(0)
+                else:
+                    content = "{}"
+                    
+                extracted = json.loads(content)
+                for k, v in extracted.items():
+                    if k not in all_clauses:
+                        all_clauses[k] = {"answer": str(v), "score": 1.0, "chunk_source": i}
+                    else:
+                        all_clauses[k]["answer"] += f"\n\n{v}"
+            except Exception as e:
+                logger.error(f"Error extracting clauses from chunk {i}: {e}")
+                
+        return all_clauses
 
     def _generate_risk_flags(
         self,
@@ -455,44 +479,43 @@ class ContractInferenceService:
         """Generate risk flags based on extracted clauses and layout analysis."""
         risk_flags = []
 
-        # Check for missing critical clauses
-        critical_checks = {
-            "Are there any termination clauses?": {
-                "type": "Missing Termination Clause",
-                "severity": "High",
-                "description": "No termination clause detected. This may limit exit options.",
-            },
-            "What is the governing law?": {
-                "type": "Missing Governing Law",
-                "severity": "High",
-                "description": "No governing law specified. Jurisdictional ambiguity risk.",
-            },
-            "Is there a confidentiality or non-disclosure agreement?": {
-                "type": "Missing Confidentiality Clause",
-                "severity": "Medium",
-                "description": "No confidentiality/NDA clause detected.",
-            },
-            "Are there any limitation of liability clauses?": {
-                "type": "Missing Liability Limitation",
-                "severity": "High",
-                "description": "No limitation of liability found. Unlimited liability exposure.",
-            },
-            "Is there an arbitration or dispute resolution clause?": {
-                "type": "Missing Dispute Resolution",
-                "severity": "Medium",
-                "description": "No arbitration/dispute resolution mechanism specified.",
-            },
-        }
+        # 1. LLM-based risk extraction based on clause content
+        if hasattr(self, 'llm') and self.llm and clauses:
+            # Prepare context
+            clauses_text = ""
+            for k, v in clauses.items():
+                clauses_text += f"{k}:\n{v.get('answer', '')}\n\n"
 
-        for question, flag_info in critical_checks.items():
-            if question in clauses:
-                clause = clauses[question]
-                answer = clause.get("answer", "").lower()
-                score = clause.get("score", 0)
+            system_prompt = (
+                "You are an expert legal risk analyst. Review the provided contract clauses and identify any legal, "
+                "financial, or business risks (e.g., unlimited liability, one-sided termination, missing governing law, unfavorable terms, etc.). "
+                "Output strictly as a JSON array of objects. Each object must have 'type' (short title of the risk), "
+                "'description' (detailed explanation of why it's a risk), and 'severity' ('High', 'Medium', or 'Low'). "
+                "If no risks are found, return []. Do not include markdown formatting or conversational text."
+            )
 
-                # Flag if low confidence or answer suggests absence
-                if score < 0.1 or "error" in answer or "no" == answer.strip():
-                    risk_flags.append(flag_info)
+            try:
+                response = self.llm.invoke([
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=f"Identify risks in these clauses:\n\n{clauses_text[:4000]}") # Truncate if too huge to avoid context limit
+                ])
+                
+                content = response.content.strip()
+                import re
+                # Use regex to find the first JSON array block
+                match = re.search(r'\[[\s\S]*\]', content)
+                if match:
+                    content = match.group(0)
+                else:
+                    content = "[]"
+                    
+                extracted_risks = json.loads(content)
+                if isinstance(extracted_risks, list):
+                    for r in extracted_risks:
+                        if "type" in r and "description" in r and "severity" in r:
+                            risk_flags.append(r)
+            except Exception as e:
+                logger.error(f"Error during LLM risk extraction: {e}")
 
         # Layout-based risks
         if layout_results.get("status") == "completed":
@@ -511,6 +534,66 @@ class ContractInferenceService:
                 })
 
         return [f for f in risk_flags if f is not None]
+
+    def _extract_obligations_with_llm(self, text: str) -> List[Dict]:
+        """Runs the Obligation Extractor system prompt on the text."""
+        if not hasattr(self, 'llm') or not self.llm:
+            return []
+            
+        system_prompt = OBLIGATION_EXTRACTOR_SYSTEM_PROMPT + "\n\nOutput strictly as a JSON array of objects with keys: Text, Severity, Deadline, Affected Entity, Category. Do NOT include markdown."
+        
+        try:
+            # We truncate the text slightly to avoid context limits, focusing on the first 6000 chars which usually contain core obligations
+            response = self.llm.invoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=f"Extract obligations from this document:\n\n{text[:6000]}")
+            ])
+            content = response.content.strip()
+            import re
+            match = re.search(r'\[[\s\S]*\]', content)
+            if match:
+                return json.loads(match.group(0))
+        except Exception as e:
+            logger.error(f"Error during Obligation Extraction: {e}")
+        return []
+
+    def _assess_impact_with_llm(self, obligations: List[Dict]) -> List[Dict]:
+        """Runs the Impact Assessor system prompt on the extracted obligations."""
+        if not hasattr(self, 'llm') or not self.llm or not obligations:
+            return []
+            
+        system_prompt = IMPACT_ASSESSOR_SYSTEM_PROMPT + "\n\nOutput strictly as a JSON array of objects mapping to the input obligations, with keys: Action Items, Departments, Risk Level, Effort. Do NOT include markdown."
+        
+        try:
+            response = self.llm.invoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=f"Assess the impact of these obligations:\n\n{json.dumps(obligations)}")
+            ])
+            content = response.content.strip()
+            import re
+            match = re.search(r'\[[\s\S]*\]', content)
+            if match:
+                return json.loads(match.group(0))
+        except Exception as e:
+            logger.error(f"Error during Impact Assessment: {e}")
+        return []
+
+    def _generate_compliance_report_with_llm(self, summary_text: str, obligations: List[Dict], impacts: List[Dict]) -> str:
+        """Runs the Compliance Reporter system prompt to synthesize a report."""
+        if not hasattr(self, 'llm') or not self.llm:
+            return "Compliance report could not be generated."
+            
+        system_prompt = COMPLIANCE_REPORTER_SYSTEM_PROMPT + "\n\nOutput the final report in clean markdown format."
+        
+        try:
+            response = self.llm.invoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=f"Generate a compliance report based on this summary:\n{summary_text}\n\nObligations:\n{json.dumps(obligations)}\n\nImpacts:\n{json.dumps(impacts)}")
+            ])
+            return response.content.strip()
+        except Exception as e:
+            logger.error(f"Error during Compliance Reporting: {e}")
+            return "Error generating compliance report."
 
     def _compile_layout_summary(self, layout_results: Dict[str, Any]) -> Dict[str, Any]:
         """Compile a summary of the layout analysis for storage."""

@@ -35,7 +35,7 @@ def get_embeddings_model():
             if not settings.OPENAI_API_KEY:
                 raise ValueError("OPENAI_API_KEY is not configured in .env")
             from langchain_openai import OpenAIEmbeddings
-            _embeddings_model = OpenAIEmbeddings(openai_api_key=settings.OPENAI_API_KEY)
+            _embeddings_model = OpenAIEmbeddings(api_key=settings.OPENAI_API_KEY)
             logger.info("OpenAI embeddings initialized")
             
         elif provider == "google":
@@ -47,6 +47,15 @@ def get_embeddings_model():
                 google_api_key=settings.GOOGLE_API_KEY
             )
             logger.info("Google Gemini embeddings initialized")
+            
+        elif provider == "ollama":
+            from langchain_ollama import OllamaEmbeddings
+            model_name = getattr(settings, "OLLAMA_EMBEDDING_MODEL", "mxbai-embed-large")
+            _embeddings_model = OllamaEmbeddings(
+                model=model_name,
+                base_url=settings.LLM_BASE_URL
+            )
+            logger.info(f"Ollama embeddings ({model_name}) initialized")
             
         else:
             raise ValueError(f"Unsupported EMBEDDING_PROVIDER: {provider}")
@@ -82,6 +91,14 @@ def get_pinecone_index() -> Optional[Any]:
                 dimension = 1536
             elif provider == "google":
                 dimension = 768
+            elif provider == "ollama":
+                model_name = getattr(settings, "OLLAMA_EMBEDDING_MODEL", "mxbai-embed-large").lower()
+                if "large" in model_name or "1024" in model_name:
+                    dimension = 1024
+                elif "nomic" in model_name:
+                    dimension = 768
+                else:
+                    dimension = 1024
             else:  # local
                 model_name = settings.LOCAL_EMBEDDING_MODEL.lower()
                 if "large" in model_name or "1024" in model_name:
@@ -213,6 +230,65 @@ class VectorStoreService:
         except Exception as e:
             logger.error(f"Error during Pinecone query: {e}")
             return []
+
+    @classmethod
+    def upsert_contract(cls, contract_id: int, filename: str, text: str) -> bool:
+        """
+        Chunk and upsert an uploaded contract into Pinecone.
+        """
+        index = get_pinecone_index()
+        if not index:
+            logger.error("Pinecone index is not ready for contract upsert")
+            return False
+
+        try:
+            from langchain_text_splitters import RecursiveCharacterTextSplitter
+            text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+            chunks = text_splitter.split_text(text)
+
+            vectors_to_upsert = []
+            for i, chunk in enumerate(chunks):
+                chunk_id = f"contract_{contract_id}_chunk_{i}"
+                embedding = cls.embed_text(chunk)
+                metadata = {
+                    "id": str(contract_id),
+                    "type": "contract",
+                    "filename": filename,
+                    "chunk_index": i,
+                    "text": chunk
+                }
+                vectors_to_upsert.append((chunk_id, embedding, metadata))
+
+            logger.info(f"Upserting {len(vectors_to_upsert)} chunks for contract {contract_id} into Pinecone...")
+            
+            # Pinecone has a batch limit (usually 100)
+            batch_size = 100
+            for i in range(0, len(vectors_to_upsert), batch_size):
+                index.upsert(vectors=vectors_to_upsert[i:i + batch_size])
+                
+            logger.info("Pinecone contract upsert complete")
+            return True
+        except Exception as e:
+            logger.error(f"Error during Pinecone contract upsert: {e}")
+            return False
+
+    @classmethod
+    def delete_contract(cls, contract_id: int) -> bool:
+        """
+        Delete all vector chunks associated with a contract ID.
+        """
+        index = get_pinecone_index()
+        if not index:
+            return False
+            
+        try:
+            # Delete vectors where metadata matches contract ID and type
+            index.delete(filter={"id": str(contract_id), "type": "contract"})
+            logger.info(f"Deleted vectors for contract {contract_id} from Pinecone.")
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting contract {contract_id} from Pinecone: {e}")
+            return False
 
 
 # Singleton instance helper

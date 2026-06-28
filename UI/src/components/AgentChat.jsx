@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Send, Bot, User, ShieldCheck } from 'lucide-react';
 import { useStore } from '../store/useStore';
+import api from '../api';
 
 export default function AgentChat() {
   const { agentMessages, addAgentMessage } = useStore();
@@ -16,29 +17,39 @@ export default function AgentChat() {
     scrollToBottom();
   }, [agentMessages, isTyping]);
 
-  const handleSend = (e) => {
+  const handleSend = async (e) => {
     e.preventDefault();
     if (!input.trim()) return;
 
     const userMsg = { id: Date.now(), text: input, sender: 'user' };
     addAgentMessage(userMsg);
+    const queryText = input;
     setInput('');
     setIsTyping(true);
 
-    // Simulate Agent response via LangGraph/Ollama + MCP
-    setTimeout(() => {
-      let responseText = "I have analyzed your query.";
+    try {
+      const response = await api.post('/agent/query', {
+        query: queryText,
+        run_full_pipeline: false
+      });
       
-      if (userMsg.text.toLowerCase().includes('rbi')) {
-        responseText = "I've checked the latest RBI feeds using the MCP tool. The most recent update is regarding 'Default Loss Guarantee (DLG) in Digital Lending'. It requires reviewing DLG agreements to ensure they don't exceed the 5% cap as per our internal policy.\n\n⚠️ **Guardrail Notice**: Please verify exact caps with the formal compliance document.";
-      } else if (userMsg.text.toLowerCase().includes('contract')) {
-        responseText = "Based on the recently analyzed 'MasterServiceAgreement_Vendor.pdf', the governing law is India. However, the termination clause is unusually short (30 days), which poses a medium risk according to our vendor risk framework.";
-      }
-
-      const agentMsg = { id: Date.now() + 1, text: responseText, sender: 'agent' };
+      const agentMsg = { 
+        id: Date.now() + 1, 
+        text: response.data.response, 
+        sender: 'agent' 
+      };
       addAgentMessage(agentMsg);
+    } catch (error) {
+      console.error('Error querying agent:', error);
+      const errorMsg = { 
+        id: Date.now() + 1, 
+        text: "I'm sorry, I encountered an error connecting to the agent system. Please ensure the backend and Ollama are running.", 
+        sender: 'agent' 
+      };
+      addAgentMessage(errorMsg);
+    } finally {
       setIsTyping(false);
-    }, 2500);
+    }
   };
 
   return (

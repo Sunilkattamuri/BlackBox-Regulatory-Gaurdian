@@ -22,8 +22,9 @@ class Settings(BaseSettings):
     PINECONE_API_KEY: Optional[str] = None
     PINECONE_INDEX_NAME: str = "regulatory-guardian-policies"
     PINECONE_ENVIRONMENT: Optional[str] = None
-    EMBEDDING_PROVIDER: str = "local"  # "local", "openai", "google"
+    EMBEDDING_PROVIDER: str = "ollama"  # "local", "openai", "google", "ollama"
     LOCAL_EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"  # e.g., "all-MiniLM-L6-v2" (384d) or "BAAI/bge-large-en-v1.5" (1024d)
+    OLLAMA_EMBEDDING_MODEL: str = "mxbai-embed-large"  # 1024d model recommended for Ollama
 
     # --- LRR Monitoring Configuration ---
     LRR_POLL_INTERVAL_HOURS: int = 6

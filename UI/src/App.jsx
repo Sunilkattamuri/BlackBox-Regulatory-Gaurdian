@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React from 'react';
+import { Routes, Route, Navigate } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
 import ContractDashboard from './components/ContractDashboard';
 import LRRDashboard from './components/LRRDashboard';
@@ -6,11 +7,9 @@ import AgentChat from './components/AgentChat';
 import './index.css';
 
 function App() {
-  const [activeTab, setActiveTab] = useState('contracts');
-
   return (
     <div className="flex h-screen bg-slate-950 text-slate-100 font-sans">
-      <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
+      <Sidebar />
       
       <main className="flex-1 flex flex-col overflow-hidden relative">
         {/* Dynamic Background */}
@@ -23,9 +22,12 @@ function App() {
         </header>
 
         <div className="flex-1 overflow-auto p-8 z-10">
-          {activeTab === 'contracts' && <ContractDashboard />}
-          {activeTab === 'lrr' && <LRRDashboard />}
-          {activeTab === 'agent' && <AgentChat />}
+          <Routes>
+            <Route path="/" element={<Navigate to="/contracts" replace />} />
+            <Route path="/contracts" element={<ContractDashboard />} />
+            <Route path="/lrr" element={<LRRDashboard />} />
+            <Route path="/agent" element={<AgentChat />} />
+          </Routes>
         </div>
       </main>
     </div>

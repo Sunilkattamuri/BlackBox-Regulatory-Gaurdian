@@ -112,7 +112,7 @@ def prepare_doclaynet_dataset(output_dir="./data/doclaynet"):
 
 if __name__ == "__main__":
     logger.info("Starting data preparation...")
-    # prepare_cuad_dataset()
+    prepare_cuad_dataset()
     prepare_doclaynet_dataset()
     logger.info("Data preparation scripts are ready. Run them to download datasets.")
 

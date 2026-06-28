@@ -1,24 +1,22 @@
-import zipfile
-import xml.etree.ElementTree as ET
-import sys
+import docx
+import re
 
-def read_docx(path):
-    try:
-        with zipfile.ZipFile(path) as docx:
-            xml_content = docx.read('word/document.xml')
-            tree = ET.fromstring(xml_content)
-            ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
-            
-            paragraphs = []
-            for p in tree.iterfind('.//w:p', ns):
-                texts = [node.text for node in p.iterfind('.//w:t', ns) if node.text]
-                if texts:
-                    paragraphs.append(''.join(texts))
-            return '\n'.join(paragraphs)
-    except Exception as e:
-        return str(e)
+try:
+    doc = docx.Document(r"c:\Users\ksuni\Sunil\Personal\MTech-BITS\Sem-4\Dissertation\BlackBox-Regulatory-Gaurdian\MID_SEM_REPORT_2024AA05522.docx")
+    
+    citations = {}
+    in_bib = False
+    for para in doc.paragraphs:
+        if "8. BIBLIOGRAPHY" in para.text:
+            in_bib = True
+        elif in_bib and len(para.text.strip()) > 0:
+            match = re.match(r"\[(\d+)\]\s*(.*)", para.text)
+            if match:
+                citations[match.group(1)] = match.group(2)
+    
+    print("Found Citations:")
+    for k, v in citations.items():
+        print(f"[{k}] {v}")
 
-if __name__ == '__main__':
-    content = read_docx(sys.argv[1])
-    with open('scratch/docx_content.txt', 'w', encoding='utf-8') as f:
-        f.write(content)
+except Exception as e:
+    print(f"Error: {e}")

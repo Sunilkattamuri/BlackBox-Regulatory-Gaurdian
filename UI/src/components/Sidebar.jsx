@@ -1,7 +1,10 @@
 import React from 'react';
+import { NavLink } from 'react-router-dom';
 import { FileText, ShieldAlert, Bot } from 'lucide-react';
+import { useStore } from '../store/useStore';
 
-export default function Sidebar({ activeTab, setActiveTab }) {
+export default function Sidebar() {
+  const { setActiveContract } = useStore();
   const tabs = [
     { id: 'contracts', icon: FileText, label: 'Contracts' },
     { id: 'lrr', icon: ShieldAlert, label: 'Regulatory (LRR)' },
@@ -19,18 +22,23 @@ export default function Sidebar({ activeTab, setActiveTab }) {
       
       <nav className="flex-1 px-4 space-y-2">
         {tabs.map(tab => (
-          <button
+          <NavLink
             key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 ${
-              activeTab === tab.id 
+            to={`/${tab.id}`}
+            onClick={() => {
+              if (tab.id === 'contracts') {
+                setActiveContract(null);
+              }
+            }}
+            className={({ isActive }) => `w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 ${
+              isActive 
                 ? 'bg-indigo-500/10 text-indigo-300 border border-indigo-500/20' 
                 : 'text-slate-400 hover:text-slate-200 hover:bg-white/5 border border-transparent'
             }`}
           >
             <tab.icon className="w-5 h-5" />
             <span className="font-medium">{tab.label}</span>
-          </button>
+          </NavLink>
         ))}
       </nav>
       
