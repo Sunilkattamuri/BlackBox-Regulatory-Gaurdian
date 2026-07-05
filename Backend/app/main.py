@@ -108,8 +108,12 @@ def health_check():
 
 # Import and include routers
 from .api.endpoints import contracts, lrr, agent, xai
+from .services.mcp_server import mcp
 
 app.include_router(contracts.router, prefix="/api/contracts", tags=["Contracts"])
 app.include_router(lrr.router, prefix="/api/lrr", tags=["LRR - Regulatory Lifecycle"])
 app.include_router(agent.router, prefix="/api/agent", tags=["Multi-Agent System"])
 app.include_router(xai.router, prefix="/api/xai", tags=["Explainability (XAI)"])
+
+# Mount MCP Server (SSE Transport)
+app.mount("/mcp", mcp.http_app(transport="sse"))

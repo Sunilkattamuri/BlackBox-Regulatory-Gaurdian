@@ -31,10 +31,10 @@ class RegulatoryAgentService:
         self.tools_by_category = {}
         self._initialized = False
         self._init_error = None
-        self._initialize()
+        self._initialize_llm()
 
-    def _initialize(self):
-        """Initialize the LLM, tools, and multi-agent graph."""
+    def _initialize_llm(self):
+        """Initialize the LLM based on configuration."""
         try:
             # Initialize LLM based on configured provider
             self.llm = self._create_llm()
@@ -48,19 +48,13 @@ class RegulatoryAgentService:
                 logger.error(self._init_error)
                 return
 
-            # Get MCP tools as LangChain tools
-            from .mcp_server import get_all_mcp_tools
-            self.tools_by_category = get_all_mcp_tools()
-
-            # Build multi-agent graphs
-            from .agents.supervisor import SupervisorGraph
-            supervisor = SupervisorGraph(self.llm, self.tools_by_category)
-            self.graph = supervisor.graph
-            self.full_pipeline_graph = supervisor.build_full_pipeline_graph()
-            self._supervisor = supervisor
+            if self.llm is None:
+                self._init_error = "Could not initialize LLM."
+                logger.error(self._init_error)
+                return
 
             self._initialized = True
-            logger.info("RegulatoryAgentService initialized successfully with multi-agent graph")
+            logger.info("RegulatoryAgentService LLM initialized successfully")
 
         except Exception as e:
             self._init_error = str(e)
@@ -91,6 +85,7 @@ class RegulatoryAgentService:
                 logger.error("OPENAI_API_KEY not set")
                 return None
             try:
+                # pyrefly: ignore [missing-import]
                 from langchain_openai import ChatOpenAI
                 return ChatOpenAI(
                     model=settings.LLM_MODEL,
@@ -106,6 +101,7 @@ class RegulatoryAgentService:
                 logger.error("GOOGLE_API_KEY not set")
                 return None
             try:
+                # pyrefly: ignore [missing-import]
                 from langchain_google_genai import ChatGoogleGenerativeAI
                 return ChatGoogleGenerativeAI(
                     model=settings.LLM_MODEL,
@@ -120,18 +116,10 @@ class RegulatoryAgentService:
             logger.error(f"Unknown LLM provider: {provider}")
             return None
 
-    def process_query(self, query: str, run_full_pipeline: bool = False) -> Dict[str, Any]:
+    async def process_query(self, query: str, run_full_pipeline: bool = False) -> Dict[str, Any]:
         """
-        Process a user query through the multi-agent system.
-
-        Args:
-            query: User's natural language query.
-            run_full_pipeline: If True, runs the full LRR cycle (Monitor → Extract → Assess → Report).
-
-        Returns:
-            Dict with response, agent_used, sources, processing_steps, guardrail_applied.
+        Process a user query through the multi-agent system over MCP.
         """
-        # Validate input through guardrails
         input_validation = guardrail_service.validate_input(query)
         if not input_validation.is_valid and settings.GUARDRAILS_STRICT_MODE:
             return {
@@ -139,34 +127,50 @@ class RegulatoryAgentService:
                 "agent_used": "guardrails",
                 "sources": ["Input validation"],
                 "guardrail_applied": True,
-                "processing_steps": [{
-                    "step": "input_validation",
-                    "status": "blocked",
-                    "violations": input_validation.violations,
-                }],
+                "processing_steps": [{"step": "input_validation", "status": "blocked"}],
             }
 
         validated_query = input_validation.validated_text
 
-        # Check if agent system is initialized
         if not self._initialized:
-            # Provide useful error + fallback
             return self._handle_uninitialized(validated_query, run_full_pipeline)
 
+        # Connect to MCP server dynamically
+        from mcp.client.sse import sse_client
+        from mcp.client.session import ClientSession
+        from langchain_mcp_adapters.tools import load_mcp_tools
+
         try:
-            # Choose which graph to run
-            if run_full_pipeline:
-                return self._run_full_pipeline(validated_query)
-            else:
-                return self._run_single_query(validated_query)
+            async with sse_client("http://localhost:8000/mcp/sse") as (read_stream, write_stream):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+                    mcp_tools = await load_mcp_tools(session)
+                    
+                    # Map tools manually based on known names
+                    self.tools_by_category = {
+                        "regulatory": [t for t in mcp_tools if "regulatory" in t.name or "rbi" in t.name],
+                        "policy": [t for t in mcp_tools if "policy" in t.name or "policies" in t.name],
+                        "obligation": [t for t in mcp_tools if "obligation" in t.name],
+                        "all": mcp_tools,
+                    }
+
+                    from .agents.supervisor import SupervisorGraph
+                    supervisor = SupervisorGraph(self.llm, self.tools_by_category)
+                    self.graph = supervisor.graph
+                    self.full_pipeline_graph = supervisor.build_full_pipeline_graph()
+                    self._supervisor = supervisor
+
+                    if run_full_pipeline:
+                        return await self._run_full_pipeline(validated_query)
+                    else:
+                        return await self._run_single_query(validated_query)
 
         except Exception as e:
-            logger.error(f"Agent processing error: {e}")
-            # Attempt fallback response
+            logger.error(f"Agent processing error (MCP Network): {e}")
             return self._generate_fallback_response(validated_query, str(e))
 
-    def _run_single_query(self, query: str) -> Dict[str, Any]:
-        """Run a single query through the supervisor graph."""
+    async def _run_single_query(self, query: str) -> Dict[str, Any]:
+        """Run a single query through the supervisor graph asynchronously."""
         initial_state = {
             "messages": [HumanMessage(content=query)],
             "current_agent": "",
@@ -178,7 +182,7 @@ class RegulatoryAgentService:
             "processing_steps": [],
         }
 
-        result = self.graph.invoke(initial_state)
+        result = await self.graph.ainvoke(initial_state)
 
         # Extract the final response
         messages = result.get("messages", [])
@@ -202,8 +206,8 @@ class RegulatoryAgentService:
             "processing_steps": result.get("processing_steps", []),
         }
 
-    def _run_full_pipeline(self, query: str) -> Dict[str, Any]:
-        """Run the full LRR pipeline: Monitor → Extract → Assess → Report."""
+    async def _run_full_pipeline(self, query: str) -> Dict[str, Any]:
+        """Run the full LRR pipeline asynchronously: Monitor → Extract → Assess → Report."""
         initial_state = {
             "messages": [HumanMessage(content=query)],
             "current_agent": "full_pipeline",
@@ -215,7 +219,7 @@ class RegulatoryAgentService:
             "processing_steps": [],
         }
 
-        result = self.full_pipeline_graph.invoke(initial_state)
+        result = await self.full_pipeline_graph.ainvoke(initial_state)
 
         final_content = result.get("compliance_report", "")
         if not final_content:

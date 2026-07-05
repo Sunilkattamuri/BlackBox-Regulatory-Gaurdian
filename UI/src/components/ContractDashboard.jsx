@@ -32,7 +32,9 @@ export default function ContractDashboard() {
     
     try {
       const response = await api.post('/contracts/upload', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
+        headers: {
+          'Content-Type': 'multipart/form-data'
+        }
       });
       // Immediately add the 'processing' contract to UI
       setContracts([response.data, ...contracts]);

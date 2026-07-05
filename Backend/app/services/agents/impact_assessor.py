@@ -77,3 +77,84 @@ class ImpactAssessorAgent:
             "capabilities": self.capabilities,
             "tools": self.tool_names,
         }
+
+    async def invoke_agent(self, llm, obligations: list) -> list:
+        """Invokes the agent autonomously with tool access over the MCP network."""
+        from langchain_core.messages import HumanMessage, SystemMessage
+        from langgraph.prebuilt import create_react_agent
+        from mcp.client.sse import sse_client
+        from mcp.client.session import ClientSession
+        from langchain_mcp_adapters.tools import load_mcp_tools
+        import json
+        import re
+
+        system_prompt = self.system_prompt + "\n\nOutput strictly as a JSON array of objects mapping to the input obligations, with keys: Action Items, Departments, Risk Level, Effort. Do NOT include markdown formatting."
+        
+        try:
+            async with sse_client("http://localhost:8000/mcp/sse") as (read_stream, write_stream):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+                    mcp_tools = await load_mcp_tools(session)
+                    
+                    # Filter specifically for policy tools for this agent
+                    tools = [t for t in mcp_tools if "policy" in t.name or "policies" in t.name]
+                    
+                    agent_executor = create_react_agent(llm, tools, prompt=system_prompt)
+                    result = await agent_executor.ainvoke({
+                        "messages": [HumanMessage(content=f"Assess the impact of these obligations:\n\n{json.dumps(obligations)}")]
+                    })
+                    content = result["messages"][-1].content
+                    
+                    match = re.search(r'\[[\s\S]*\]', content)
+                    if match:
+                        json_str = match.group(0)
+                        try:
+                            return json.loads(json_str)
+                        except Exception as parse_e:
+                            logger.error(f"Failed to parse JSON array from agent output: {parse_e}. Attempting LLM fix...")
+                            try:
+                                fix_prompt = (
+                                    "The following JSON array is invalid. It likely contains unescaped double quotes inside string values. "
+                                    "You MUST fix it by escaping any inner double quotes with a backslash (e.g. \\\") or changing them to single quotes. "
+                                    "Output ONLY the valid JSON array. Do not include markdown blocks (```) or any other text.\n\n"
+                                    f"{json_str}"
+                                )
+                                fix_response = await llm.ainvoke([HumanMessage(content=fix_prompt)])
+                                fixed_match = re.search(r'\[[\s\S]*\]', fix_response.content)
+                                if fixed_match:
+                                    try:
+                                        return json.loads(fixed_match.group(0))
+                                    except Exception as e2:
+                                        logger.error(f"Second parse failed: {e2}")
+                                        return [{"Action Items": "Manual review required", "Departments": "Compliance", "Risk Level": "Unknown", "Effort": "Unknown"}]
+                            except Exception as fix_e:
+                                logger.error(f"LLM failed to fix JSON: {fix_e}")
+        except Exception as e:
+            logger.error(f"Error during autonomous Agent execution (MCP Network): {e}")
+            try:
+                response = await llm.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=f"Assess the impact of these obligations:\n\n{json.dumps(obligations)}")])
+                match = re.search(r'\[[\s\S]*\]', response.content)
+                if match:
+                    json_str = match.group(0)
+                    try:
+                        return json.loads(json_str)
+                    except Exception as parse_e:
+                        logger.error(f"Fallback parse failed: {parse_e}. Attempting LLM fix...")
+                        fix_prompt = (
+                            "The following JSON array is invalid. It likely contains unescaped double quotes inside string values. "
+                            "You MUST fix it by escaping any inner double quotes with a backslash (e.g. \\\") or changing them to single quotes. "
+                            "Output ONLY the valid JSON array. Do not include markdown blocks (```) or any other text.\n\n"
+                            f"{json_str}"
+                        )
+                        fix_response = await llm.ainvoke([HumanMessage(content=fix_prompt)])
+                        fixed_match = re.search(r'\[[\s\S]*\]', fix_response.content)
+                        if fixed_match:
+                            try:
+                                return json.loads(fixed_match.group(0))
+                            except Exception as e2:
+                                logger.error(f"Second parse failed: {e2}")
+                                return [{"Action Items": "Manual review required", "Departments": "Compliance", "Risk Level": "Unknown", "Effort": "Unknown"}]
+            except Exception:
+                pass
+                
+        return []

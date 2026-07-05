@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     # --- Pinecone Vector DB ---
     PINECONE_API_KEY: Optional[str] = None
     PINECONE_INDEX_NAME: str = "regulatory-guardian-policies"
+    LRR_PINECONE_INDEX_NAME: str = "lrr"
     PINECONE_ENVIRONMENT: Optional[str] = None
     EMBEDDING_PROVIDER: str = "ollama"  # "local", "openai", "google", "ollama"
     LOCAL_EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"  # e.g., "all-MiniLM-L6-v2" (384d) or "BAAI/bge-large-en-v1.5" (1024d)

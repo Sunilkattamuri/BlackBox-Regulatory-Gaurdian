@@ -74,7 +74,7 @@ export default function LRRDashboard() {
             <div className="bg-slate-950 p-6">
               <h4 className="text-sm font-semibold text-slate-300 mb-4 uppercase tracking-wider">Automated Policy Impact Mapping</h4>
               <div className="space-y-3">
-                {update.obligations.map((ob, i) => (
+                {(update.obligations || []).map((ob, i) => (
                   <div key={i} className="flex items-center justify-between p-3 rounded-lg bg-slate-900 border border-white/5">
                     <div className="flex items-center gap-4">
                       <div className={`px-2 py-1 rounded text-xs font-bold border ${

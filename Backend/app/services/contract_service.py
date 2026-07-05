@@ -405,8 +405,14 @@ class ContractInferenceService:
         layout_summary = self._compile_layout_summary(layout_results)
         
         # Step 8: Multi-Agent Pipeline (Obligations -> Impact -> Report)
-        obligations = self._extract_obligations_with_llm(raw_text)
-        impact_assessment = self._assess_impact_with_llm(obligations)
+        try:
+            obligations = self._extract_obligations_with_agent(raw_text)
+            impact_assessment = self._assess_impact_with_agent(obligations)
+        except Exception:
+            # Fallback to LLM if agent initialization fails
+            obligations = self._extract_obligations_with_llm(raw_text)
+            impact_assessment = self._assess_impact_with_llm(obligations)
+            
         compliance_report = self._generate_compliance_report_with_llm(
             raw_text[:1000], obligations, impact_assessment
         )
@@ -495,31 +501,43 @@ class ContractInferenceService:
                 "If no risks are found, return []. Do not include markdown formatting or conversational text."
             )
 
-            try:
-                response = self.llm.invoke([
-                    SystemMessage(content=system_prompt),
-                    HumanMessage(content=f"Identify risks in these clauses:\n\n{clauses_text[:4000]}") # Truncate if too huge to avoid context limit
-                ])
-                
-                content = response.content.strip()
-                import re
-                # Use regex to find the first JSON array block
-                match = re.search(r'\[[\s\S]*\]', content)
-                if match:
-                    content = match.group(0)
-                else:
-                    content = "[]"
+            from langchain_text_splitters import RecursiveCharacterTextSplitter
+            text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=4000,
+                chunk_overlap=400,
+                separators=["\n\n", "\n", " ", ""]
+            )
+            
+            chunks = text_splitter.split_text(clauses_text)
+            
+            for chunk in chunks:
+                try:
+                    response = self.llm.invoke([
+                        SystemMessage(content=system_prompt),
+                        HumanMessage(content=f"Identify risks in these clauses:\n\n{chunk}")
+                    ])
                     
-                extracted_risks = json.loads(content)
-                if isinstance(extracted_risks, list):
-                    for r in extracted_risks:
-                        if "type" in r and "description" in r and "severity" in r:
-                            # ensure reasoning exists
-                            if "reasoning" not in r:
-                                r["reasoning"] = "Standard risk pattern detected."
-                            risk_flags.append(r)
-            except Exception as e:
-                logger.error(f"Error during LLM risk extraction: {e}")
+                    content = response.content.strip()
+                    import re
+                    # Use regex to find the first JSON array block
+                    match = re.search(r'\[[\s\S]*\]', content)
+                    if match:
+                        content = match.group(0)
+                    else:
+                        content = "[]"
+                        
+                    extracted_risks = json.loads(content)
+                    if isinstance(extracted_risks, list):
+                        for r in extracted_risks:
+                            if "type" in r and "description" in r and "severity" in r:
+                                # ensure reasoning exists
+                                if "reasoning" not in r:
+                                    r["reasoning"] = "Standard risk pattern detected."
+                                # avoid exact duplicates
+                                if not any(existing.get("description") == r.get("description") for existing in risk_flags):
+                                    risk_flags.append(r)
+                except Exception as e:
+                    logger.error(f"Error during LLM risk extraction for a chunk: {e}")
 
         # Layout-based risks
         if layout_results.get("status") == "completed":
@@ -581,6 +599,31 @@ class ContractInferenceService:
         except Exception as e:
             logger.error(f"Error during Impact Assessment: {e}")
         return []
+
+    def _extract_obligations_with_agent(self, text: str) -> List[Dict]:
+        """Runs the autonomous Obligation Extractor Agent on the text."""
+        if not hasattr(self, 'llm') or not self.llm:
+            return []
+        try:
+            from .agents.obligation_extractor import ObligationExtractorAgent
+            agent = ObligationExtractorAgent()
+            return agent.invoke_agent(self.llm, text)
+        except Exception as e:
+            logger.error(f"Error invoking ObligationExtractorAgent: {e}")
+            return self._extract_obligations_with_llm(text)
+
+    def _assess_impact_with_agent(self, obligations: List[Dict]) -> List[Dict]:
+        """Runs the autonomous Impact Assessor Agent on the extracted obligations."""
+        if not hasattr(self, 'llm') or not self.llm or not obligations:
+            return []
+        try:
+            from .agents.impact_assessor import ImpactAssessorAgent
+            import asyncio
+            agent = ImpactAssessorAgent()
+            return asyncio.run(agent.invoke_agent(self.llm, obligations))
+        except Exception as e:
+            logger.error(f"Error invoking ImpactAssessorAgent: {e}")
+            return self._assess_impact_with_llm(obligations)
 
     def _generate_compliance_report_with_llm(self, summary_text: str, obligations: List[Dict], impacts: List[Dict]) -> str:
         """Runs the Compliance Reporter system prompt to synthesize a report."""

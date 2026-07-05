@@ -102,7 +102,7 @@ class SupervisorGraph:
         workflow = StateGraph(MultiAgentState)
 
         # --- Node: Supervisor (routes to specialist) ---
-        def supervisor_node(state: MultiAgentState) -> dict:
+        async def supervisor_node(state: MultiAgentState) -> dict:
             messages = state["messages"]
             user_query = ""
             for msg in reversed(messages):
@@ -124,7 +124,7 @@ class SupervisorGraph:
             }
 
         # --- Node: Regulatory Monitor ---
-        def regulatory_monitor_node(state: MultiAgentState) -> dict:
+        async def regulatory_monitor_node(state: MultiAgentState) -> dict:
             agent = self.agents["regulatory_monitor"]
             messages = state["messages"]
 
@@ -136,20 +136,20 @@ class SupervisorGraph:
                 agent_tools = self.tools_by_category.get("regulatory", self.all_tools[:3])
                 try:
                     llm_with_tools = self.llm.bind_tools(agent_tools)
-                    response = llm_with_tools.invoke(agent_messages)
+                    response = await llm_with_tools.ainvoke(agent_messages)
                 except NotImplementedError:
                     logger.warning("Regulatory Monitor: LLM does not support tool binding. Falling back to direct prompt.")
-                    response = self.llm.invoke(agent_messages)
+                    response = await self.llm.ainvoke(agent_messages)
 
                 # If the LLM wants to call tools, handle it
                 if hasattr(response, "tool_calls") and response.tool_calls:
                     tool_node = ToolNode(agent_tools)
-                    tool_result = tool_node.invoke({"messages": agent_messages + [response]})
+                    tool_result = await tool_node.ainvoke({"messages": agent_messages + [response]})
                     tool_messages = tool_result.get("messages", [])
 
                     # Get final response after tool use
                     final_messages = agent_messages + [response] + tool_messages
-                    final_response = self.llm.invoke(final_messages)
+                    final_response = await self.llm.ainvoke(final_messages)
 
                     return {
                         "messages": [response] + tool_messages + [final_response],
@@ -203,7 +203,7 @@ class SupervisorGraph:
                     }
 
         # --- Node: Obligation Extractor ---
-        def obligation_extractor_node(state: MultiAgentState) -> dict:
+        async def obligation_extractor_node(state: MultiAgentState) -> dict:
             agent = self.agents["obligation_extractor"]
             messages = state["messages"]
 
@@ -220,12 +220,12 @@ class SupervisorGraph:
                 if agent_tools:
                     try:
                         llm_with_tools = self.llm.bind_tools(agent_tools)
-                        response = llm_with_tools.invoke(agent_messages)
+                        response = await llm_with_tools.ainvoke(agent_messages)
                     except NotImplementedError:
                         logger.warning("Obligation Extractor: LLM does not support tool binding. Falling back to direct prompt.")
-                        response = self.llm.invoke(agent_messages)
+                        response = await self.llm.ainvoke(agent_messages)
                 else:
-                    response = self.llm.invoke(agent_messages)
+                    response = await self.llm.ainvoke(agent_messages)
 
                 return {
                     "messages": [response],
@@ -268,7 +268,7 @@ class SupervisorGraph:
                 }
 
         # --- Node: Impact Assessor ---
-        def impact_assessor_node(state: MultiAgentState) -> dict:
+        async def impact_assessor_node(state: MultiAgentState) -> dict:
             agent = self.agents["impact_assessor"]
             messages = state["messages"]
 
@@ -289,12 +289,12 @@ class SupervisorGraph:
                 if agent_tools:
                     try:
                         llm_with_tools = self.llm.bind_tools(agent_tools)
-                        response = llm_with_tools.invoke(agent_messages)
+                        response = await llm_with_tools.ainvoke(agent_messages)
                     except NotImplementedError:
                         logger.warning("Impact Assessor: LLM does not support tool binding. Falling back to direct prompt.")
-                        response = self.llm.invoke(agent_messages)
+                        response = await self.llm.ainvoke(agent_messages)
                 else:
-                    response = self.llm.invoke(agent_messages)
+                    response = await self.llm.ainvoke(agent_messages)
 
                 return {
                     "messages": [response],
@@ -317,7 +317,7 @@ class SupervisorGraph:
                 }
 
         # --- Node: Compliance Reporter ---
-        def compliance_reporter_node(state: MultiAgentState) -> dict:
+        async def compliance_reporter_node(state: MultiAgentState) -> dict:
             agent = self.agents["compliance_reporter"]
             messages = state["messages"]
 
@@ -337,7 +337,7 @@ class SupervisorGraph:
             agent_messages = [system_msg, context_msg]
 
             try:
-                response = self.llm.invoke(agent_messages)
+                response = await self.llm.ainvoke(agent_messages)
 
                 return {
                     "messages": [response],
@@ -400,6 +400,7 @@ class SupervisorGraph:
         workflow.add_edge("obligation_extractor", END)
         workflow.add_edge("impact_assessor", END)
         workflow.add_edge("compliance_reporter", END)
+
 
         return workflow.compile()
 

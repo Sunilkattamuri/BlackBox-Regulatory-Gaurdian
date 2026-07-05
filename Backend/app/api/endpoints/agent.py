@@ -7,14 +7,14 @@ router = APIRouter()
 
 
 @router.post("/query", response_model=schemas.AgentResponse)
-def query_agent(request: schemas.AgentRequest):
+async def query_agent(request: schemas.AgentRequest):
     """
     Process a query through the multi-agent system.
     Routes to the appropriate specialist agent based on query content.
     Set run_full_pipeline=True for a complete LRR cycle (Monitor → Extract → Assess → Report).
     """
     try:
-        result = agent_service.process_query(
+        result = await agent_service.process_query(
             query=request.query,
             run_full_pipeline=request.run_full_pipeline,
         )

@@ -34,6 +34,7 @@ def get_embeddings_model():
         elif provider == "openai":
             if not settings.OPENAI_API_KEY:
                 raise ValueError("OPENAI_API_KEY is not configured in .env")
+            # pyrefly: ignore [missing-import]
             from langchain_openai import OpenAIEmbeddings
             _embeddings_model = OpenAIEmbeddings(api_key=settings.OPENAI_API_KEY)
             logger.info("OpenAI embeddings initialized")
@@ -41,6 +42,7 @@ def get_embeddings_model():
         elif provider == "google":
             if not settings.GOOGLE_API_KEY:
                 raise ValueError("GOOGLE_API_KEY is not configured in .env")
+            # pyrefly: ignore [missing-import]
             from langchain_google_genai import GoogleGenerativeAIEmbeddings
             _embeddings_model = GoogleGenerativeAIEmbeddings(
                 model="models/embedding-001",
@@ -67,7 +69,7 @@ def get_embeddings_model():
     return _embeddings_model
 
 
-def get_pinecone_index() -> Optional[Any]:
+def get_pinecone_index(index_name: Optional[str] = None) -> Optional[Any]:
     """Lazy initialize Pinecone and return the Index instance, creating it if needed."""
     global _pinecone_client
     if not settings.PINECONE_API_KEY:
@@ -81,7 +83,9 @@ def get_pinecone_index() -> Optional[Any]:
         if _pinecone_client is None:
             _pinecone_client = Pinecone(api_key=settings.PINECONE_API_KEY)
 
-        index_name = settings.PINECONE_INDEX_NAME
+        if index_name is None:
+            index_name = settings.PINECONE_INDEX_NAME
+            
         existing_indexes = [idx.name for idx in _pinecone_client.list_indexes()]
 
         if index_name not in existing_indexes:
