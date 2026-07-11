@@ -189,10 +189,11 @@ class VectorStoreService:
             return False
 
     @classmethod
-    def search_policies(cls, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+    def search_policies(cls, query: str, top_k: int = 5, min_score: float = 0.0) -> List[Dict[str, Any]]:
         """
         Semantically query Pinecone for relevant policy documents.
         Returns a list of matching policies formatted as dictionaries.
+        Results are filtered to only include those with a score >= min_score.
         """
         index = get_pinecone_index()
         if not index:
@@ -212,8 +213,11 @@ class VectorStoreService:
 
             matches = []
             for match in results.get("matches", []):
-                metadata = match.get("metadata", {})
                 score = match.get("score", 0.0)
+                if score < min_score:
+                    continue
+                
+                metadata = match.get("metadata", {})
                 
                 # Reconstruct policy dict from metadata
                 policy_dict = {
@@ -293,6 +297,50 @@ class VectorStoreService:
         except Exception as e:
             logger.error(f"Error deleting contract {contract_id} from Pinecone: {e}")
             return False
+
+    @classmethod
+    def search_contract_parsing_index(cls, query: str, top_k: int = 5, min_score: float = 0.0) -> List[Dict[str, Any]]:
+        """
+        Semantically query the contract-parsing-index for historical obligation parses.
+        Results are filtered to only include those with a score >= min_score.
+        """
+        index = get_pinecone_index(index_name="contract-parsing-index")
+        if not index:
+            logger.warning("Pinecone contract-parsing-index not initialized; skipping semantic search")
+            return []
+
+        try:
+            logger.info(f"Generating embedding for contract parse search query: '{query}'")
+            query_vector = cls.embed_text(query)
+
+            logger.info(f"Querying contract-parsing-index for: '{query}'")
+            results = index.query(
+                vector=query_vector,
+                top_k=top_k,
+                include_metadata=True
+            )
+
+            matches = []
+            for match in results.get("matches", []):
+                score = match.get("score", 0.0)
+                if score < min_score:
+                    continue
+                    
+                metadata = match.get("metadata", {})
+                
+                match_data = {
+                    "text": metadata.get("text", ""),
+                    "source_contract": metadata.get("source_contract", "Unknown"),
+                    "obligation_type": metadata.get("obligation_type", "Unknown"),
+                    "score": score
+                }
+                matches.append(match_data)
+
+            return matches
+
+        except Exception as e:
+            logger.error(f"Error during contract-parsing-index query: {e}")
+            return []
 
 
 # Singleton instance helper

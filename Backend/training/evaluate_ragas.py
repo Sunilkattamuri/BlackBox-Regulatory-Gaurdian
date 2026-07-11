@@ -66,7 +66,7 @@ def evaluate_retrieval_generation():
         gt = item["ground_truth"]
         
         # Retrieve context from our VectorStore
-        retrieved_policies = vector_store_service.search_policies(q, top_k=3)
+        retrieved_policies = vector_store_service.search_policies(q, top_k=3, min_score=0.7)
         retrieved_contexts = [
             f"Policy: {p.get('name')}\nSummary: {p.get('summary')}" 
             for p in retrieved_policies

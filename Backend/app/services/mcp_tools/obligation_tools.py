@@ -180,6 +180,39 @@ def register_obligation_tools(mcp: FastMCP):
             return f"Error retrieving obligations: {str(e)}"
 
     @mcp.tool()
+    def search_historical_obligations(query: str) -> str:
+        """
+        Semantically search the bank's historical contract parsing database.
+        Use this tool when you need context on how similar obligations were parsed 
+        in previous contracts or to find historical precedents.
+
+        Args:
+            query: Semantic search query (e.g., 'data privacy breach notification penalties').
+        """
+        try:
+            from ..vector_store_service import vector_store_service
+            results = vector_store_service.search_contract_parsing_index(query=query, top_k=3, min_score=0.7)
+
+            if not results:
+                return f"No historical contract obligation parses found matching '{query}'."
+
+            formatted = []
+            for i, r in enumerate(results, 1):
+                entry = (
+                    f"--- Match {i} (Score: {r.get('score', 0):.2f}) ---\n"
+                    f"Source Contract: {r.get('source_contract', 'Unknown')}\n"
+                    f"Obligation Type: {r.get('obligation_type', 'Unknown')}\n"
+                    f"Text:\n{r.get('text', 'N/A')}\n"
+                )
+                formatted.append(entry)
+
+            return f"Found {len(results)} historical parse(s) for '{query}':\n\n" + "\n\n".join(formatted)
+
+        except Exception as e:
+            logger.error(f"Error searching historical obligations: {e}")
+            return f"Error searching historical obligations: {str(e)}"
+
+    @mcp.tool()
     def update_obligation_status(obligation_id: str, status: str) -> str:
         """
         Update the status of a specific obligation.

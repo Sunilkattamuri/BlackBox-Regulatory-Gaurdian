@@ -164,10 +164,33 @@ def get_all_mcp_tools():
         except Exception as e:
             return f"Error: {str(e)}"
 
+    @tool
+    def search_historical_obligations_tool(query: str) -> str:
+        """Semantically search historical contract parses for context on how obligations were previously extracted."""
+        try:
+            from .vector_store_service import vector_store_service
+            results = vector_store_service.search_contract_parsing_index(query=query, top_k=3, min_score=0.7)
+            if not results:
+                return f"No historical parses found matching '{query}'."
+            formatted = []
+            for i, r in enumerate(results, 1):
+                formatted.append(
+                    f"Match {i}:\nSource: {r.get('source_contract')}\nType: {r.get('obligation_type')}\nText: {r.get('text')}\n"
+                )
+            return "\n".join(formatted)
+        except Exception as e:
+            return f"Error: {str(e)}"
+
     return {
         "regulatory": [get_regulatory_updates_tool, scrape_rbi_circular_tool, search_rbi_archive_tool],
         "policy": [search_internal_policies_tool, get_policy_mapping_tool],
-        "obligation": [extract_obligations_tool, get_active_obligations_tool],
+        "obligation": [
+            extract_obligations_tool, 
+            get_active_obligations_tool, 
+            search_historical_obligations_tool,
+            get_regulatory_updates_tool,
+            search_rbi_archive_tool
+        ],
         "all": [
             get_regulatory_updates_tool,
             scrape_rbi_circular_tool,

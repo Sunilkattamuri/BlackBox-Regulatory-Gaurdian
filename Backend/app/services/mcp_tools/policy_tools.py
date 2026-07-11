@@ -136,7 +136,7 @@ def register_policy_tools(mcp: FastMCP):
         # Check if Pinecone is configured and ready
         if vector_store_service.is_configured():
             logger.info(f"Using Pinecone vector semantic search for query: '{query}'")
-            results = vector_store_service.search_policies(query)
+            results = vector_store_service.search_policies(query, min_score=0.7)
             if results:
                 formatted = []
                 for p in results[:5]:

@@ -28,6 +28,7 @@ Your role:
    - The regulatory category (which area it falls under)
 4. Look for obligation indicators: "shall", "must", "required to", "obligated to", "mandatory"
 5. Also identify penalties for non-compliance
+6. Use the search_historical_obligations tool if you need context on how similar complex clauses were parsed by the bank previously.
 
 Output format for each obligation:
 - Text: The exact obligation statement
@@ -59,6 +60,9 @@ class ObligationExtractorAgent:
         self.tool_names = [
             "extract_obligations_tool",
             "get_active_obligations_tool",
+            "search_historical_obligations_tool",
+            "get_regulatory_updates_tool",
+            "search_rbi_archive_tool",
         ]
 
     def get_system_prompt(self) -> str:
