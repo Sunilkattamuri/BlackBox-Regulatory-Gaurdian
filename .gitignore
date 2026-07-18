@@ -232,6 +232,5 @@ Backend/uploaded_contracts/
 Backend/mlruns/
 scratch/
 *.pdf
-*.docx
 *.png
 ~$*
