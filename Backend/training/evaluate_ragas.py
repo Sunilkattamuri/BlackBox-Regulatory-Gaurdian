@@ -21,10 +21,10 @@ def evaluate_retrieval_generation():
     try:
         from ragas import evaluate
         from ragas.metrics import (
-            faithfulness,
-            answer_relevancy,
-            context_precision,
-            context_recall
+            Faithfulness,
+            AnswerRelevancy,
+            LLMContextPrecisionWithReference,
+            LLMContextRecall
         )
     except ImportError:
         print("Error: RAGAS is not installed. Please run `pip install ragas`.")
@@ -82,7 +82,8 @@ def evaluate_retrieval_generation():
         # Generate Answer using the agent service (which wraps our LLM)
         # We run a single query bypassing the full pipeline for targeted QA evaluation
         try:
-            response_data = agent_service.process_query(q, run_full_pipeline=False)
+            import asyncio
+            response_data = asyncio.run(agent_service.process_query(q, run_full_pipeline=False))
             answer = response_data.get("response", "No answer generated.")
         except Exception as e:
             logger.warning(f"Agent service failed to answer: {e}. Using mock answer.")
@@ -114,23 +115,31 @@ def evaluate_retrieval_generation():
         print("Continuing, but expect an error if no LLM provider is available...\n")
         
     try:
+        from openai import OpenAI
+        from ragas.llms import llm_factory
+        from ragas.embeddings import embedding_factory
+        
+        openai_client = OpenAI(base_url="http://localhost:11434/v1", api_key="ollama")
+        evaluator_llm = llm_factory("llama3.1", client=openai_client)
+        evaluator_emb = embedding_factory("openai", model="mxbai-embed-large", client=openai_client)
+
         result = evaluate(
             dataset=dataset,
             metrics=[
-                context_precision,
-                context_recall,
-                faithfulness,
-                answer_relevancy,
-            ]
+                LLMContextPrecisionWithReference(llm=evaluator_llm),
+                LLMContextRecall(llm=evaluator_llm),
+                Faithfulness(llm=evaluator_llm),
+                AnswerRelevancy(llm=evaluator_llm, embeddings=evaluator_emb),
+            ],
+            llm=evaluator_llm,
+            embeddings=evaluator_emb
         )
         
         print("\n" + "-" * 60)
         print("RAGAS EVALUATION RESULTS:")
         print("-" * 60)
         
-        # result is a dictionary-like object in ragas
-        for metric_name, score in result.items():
-            print(f"  {metric_name.replace('_', ' ').title()}: {score:.4f}")
+        print(result)
             
         print("-" * 60)
         print("Evaluation complete!")
