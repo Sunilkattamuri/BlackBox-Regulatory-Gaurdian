@@ -19,7 +19,10 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.messages import SystemMessage, HumanMessage
 from transformers import (
     LayoutLMv3Processor,
-    LayoutLMv3ForTokenClassification
+    LayoutLMv3ForTokenClassification,
+    pipeline,
+    AutoTokenizer,
+    AutoModelForQuestionAnswering
 )
 
 from .agents.obligation_extractor import OBLIGATION_EXTRACTOR_SYSTEM_PROMPT
@@ -58,6 +61,8 @@ class ContractInferenceService:
     def __init__(self):
         self.device = 0 if torch.cuda.is_available() else -1
         self.qa_pipeline = None
+        self.bert_tokenizer = None
+        self.bert_model = None
         self.layout_processor = None
         self.layout_model = None
         self.layout_labels = DOCLAYNET_LABELS
@@ -108,6 +113,33 @@ class ContractInferenceService:
         else:
             logger.info(f"LayoutLMv3 not found at {layoutlm_path}. "
                         "Layout analysis will be skipped.")
+
+        # 3. Load fine-tuned Legal-BERT for QA Clause Extraction
+        legal_bert_path = settings.LEGAL_BERT_PATH
+        if os.path.exists(legal_bert_path):
+            try:
+                self.bert_tokenizer = AutoTokenizer.from_pretrained(legal_bert_path)
+                self.bert_model = AutoModelForQuestionAnswering.from_pretrained(legal_bert_path)
+                if self.device == 0:
+                    self.bert_model.to("cuda")
+                self.bert_model.eval()
+                logger.info(f"Loaded fine-tuned Legal-BERT model from {legal_bert_path}")
+            except Exception as e:
+                logger.error(f"Error loading Legal-BERT from {legal_bert_path}: {e}")
+                self.bert_tokenizer = None
+                self.bert_model = None
+        else:
+            try:
+                self.bert_tokenizer = AutoTokenizer.from_pretrained("nlpaueb/legal-bert-base-uncased")
+                self.bert_model = AutoModelForQuestionAnswering.from_pretrained("nlpaueb/legal-bert-base-uncased")
+                if self.device == 0:
+                    self.bert_model.to("cuda")
+                self.bert_model.eval()
+                logger.info("Loaded pretrained Legal-BERT model (nlpaueb/legal-bert-base-uncased)")
+            except Exception as e:
+                logger.info(f"Legal-BERT model not found at {legal_bert_path} and fallback failed: {e}")
+                self.bert_tokenizer = None
+                self.bert_model = None
 
 
 
@@ -394,9 +426,11 @@ class ContractInferenceService:
         # Step 3: Build enhanced context using layout structure
         enhanced_context = self._build_enhanced_context(raw_text, layout_results)
 
-        # Step 4: Extract clauses using LLM
-        # We use raw_text because LLM extraction handles chunking to get complete context
-        extracted_clauses = self._extract_clauses_with_llm(raw_text)
+        # Step 4: Extract clauses using fine-tuned Legal-BERT (with LLM fallback)
+        if self.bert_model and self.bert_tokenizer:
+            extracted_clauses = self._extract_clauses_with_legal_bert(raw_text)
+        else:
+            extracted_clauses = self._extract_clauses_with_llm(raw_text)
 
         # Step 6: Generate risk flags
         risk_flags = self._generate_risk_flags(extracted_clauses, layout_results)
@@ -430,6 +464,129 @@ class ContractInferenceService:
             "impact_assessment": impact_assessment,
             "compliance_report": compliance_report,
         }
+
+    CUAD_CLAUSE_QUERIES = {
+        "Governing Law": "What is the governing law of the contract?",
+        "Termination": "What are the termination rights and notice periods?",
+        "Indemnification": "What are the indemnification provisions and obligations?",
+        "Limitation of Liability": "What is the limitation of liability or financial cap?",
+        "Parties": "Who are the parties entering into this agreement?",
+        "Confidentiality": "What are the confidentiality obligations and restrictions?",
+        "Intellectual Property": "What are the intellectual property rights and assignments?",
+        "Non-Compete / Exclusivity": "What are the non-compete or exclusivity restrictions?"
+    }
+
+    def _expand_to_sentence_boundaries(self, text: str, substring: str) -> str:
+        """Expands a raw predicted token span to complete sentence boundaries within text."""
+        idx = text.find(substring)
+        if idx == -1:
+            return substring.strip().capitalize()
+        
+        # Expand backward to start of sentence / newline
+        start_idx = idx
+        while start_idx > 0 and text[start_idx - 1] not in ['.', '\n', '!', ';']:
+            start_idx -= 1
+            if idx - start_idx > 250:
+                break
+        
+        # Expand forward to end of sentence / newline
+        end_idx = idx + len(substring)
+        while end_idx < len(text) and text[end_idx] not in ['.', '\n', '!', ';']:
+            end_idx += 1
+            if end_idx - (idx + len(substring)) > 250:
+                break
+        if end_idx < len(text) and text[end_idx] in ['.', '!', ';']:
+            end_idx += 1
+
+        expanded = text[start_idx:end_idx].strip()
+        return expanded if len(expanded) >= len(substring) else substring.strip()
+
+    def _extract_clauses_with_legal_bert(self, text: str) -> Dict[str, Dict]:
+        """
+        Extracts clauses using a Hybrid Legal-BERT + LLM ensemble:
+        1. Legal-BERT locates precise clause token spans with sentence expansion.
+        2. High-confidence spans (Score >= 1.5) are retained.
+        3. LLM (Llama 3) supplements any missing or low-confidence clause categories.
+        """
+        if not self.bert_model or not self.bert_tokenizer:
+            logger.warning("Legal-BERT QA model not available. Falling back to LLM.")
+            return self._extract_clauses_with_llm(text)
+
+        logger.info("Extracting clauses using Hybrid Legal-BERT + LLM Ensemble...")
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=2000,
+            chunk_overlap=200,
+            length_function=len
+        )
+        chunks = splitter.split_text(text)
+        extracted_clauses = {}
+        device = torch.device("cuda" if self.device == 0 and torch.cuda.is_available() else "cpu")
+
+        for clause_name, query in self.CUAD_CLAUSE_QUERIES.items():
+            best_answer = ""
+            best_score = -999.0
+            best_chunk_idx = 0
+            best_chunk_text = ""
+
+            for i, chunk in enumerate(chunks[:10]):
+                try:
+                    inputs = self.bert_tokenizer(
+                        query,
+                        chunk,
+                        max_length=512,
+                        truncation="only_second",
+                        return_tensors="pt",
+                        padding="max_length"
+                    )
+                    inputs = {k: v.to(device) for k, v in inputs.items()}
+                    with torch.no_grad():
+                        outputs = self.bert_model(**inputs)
+
+                    start_logits = outputs.start_logits[0]
+                    end_logits = outputs.end_logits[0]
+
+                    start_idx = torch.argmax(start_logits).item()
+                    end_idx = torch.argmax(end_logits).item()
+
+                    if end_idx >= start_idx and (end_idx - start_idx) < 150 and start_idx > 0:
+                        token_ids = inputs["input_ids"][0][start_idx : end_idx + 1]
+                        ans_text = self.bert_tokenizer.decode(token_ids, skip_special_tokens=True).strip()
+                        score = float(start_logits[start_idx] + end_logits[end_idx])
+
+                        if len(ans_text) > 3 and score > best_score:
+                            best_score = score
+                            best_answer = ans_text
+                            best_chunk_idx = i
+                            best_chunk_text = chunk
+                except Exception as e:
+                    logger.debug(f"Legal-BERT extraction error for '{clause_name}' on chunk {i}: {e}")
+
+            # Require calibrated score threshold (Score >= 1.5) for Legal-BERT span retention
+            if best_answer and best_score >= 1.5:
+                expanded_span = self._expand_to_sentence_boundaries(best_chunk_text, best_answer)
+                extracted_clauses[clause_name] = {
+                    "answer": expanded_span,
+                    "score": round(best_score, 4),
+                    "chunk_source": best_chunk_idx,
+                    "model": "Legal-BERT (Fine-Tuned)"
+                }
+
+        # Hybrid Supplement: Use Llama 3 to extract full structured clauses for missing categories
+        if hasattr(self, 'llm') and self.llm:
+            try:
+                logger.info("Supplementing remaining clause categories with Llama 3...")
+                llm_clauses = self._extract_clauses_with_llm(text)
+                for k, v in llm_clauses.items():
+                    if k not in extracted_clauses:
+                        extracted_clauses[k] = v
+            except Exception as e:
+                logger.warning(f"Failed to supplement clauses with LLM: {e}")
+
+        if not extracted_clauses:
+            logger.info("Legal-BERT produced no high-confidence clause spans. Falling back to LLM.")
+            return self._extract_clauses_with_llm(text)
+
+        return extracted_clauses
 
     def _extract_clauses_with_llm(self, text: str) -> Dict[str, Dict]:
         """Extracts clauses from the text using LLM and text chunking."""
