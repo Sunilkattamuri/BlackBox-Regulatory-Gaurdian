@@ -30,6 +30,7 @@ from .agents.impact_assessor import IMPACT_ASSESSOR_SYSTEM_PROMPT
 from .agents.compliance_reporter import COMPLIANCE_REPORTER_SYSTEM_PROMPT
 
 from ..config import settings
+from .guardrails_service import guardrail_service
 
 logger = logging.getLogger(__name__)
 
@@ -377,7 +378,7 @@ class ContractInferenceService:
         important layout sections (headers, titled sections) identified by LayoutLMv3.
         """
         if layout_results.get("status") != "completed":
-            return raw_text[:4000]
+            return raw_text
 
         sections = layout_results.get("sections", {})
 
@@ -403,11 +404,9 @@ class ContractInferenceService:
 
         enhanced_context = "\n".join(priority_text_parts)
 
-        if len(enhanced_context) > 4000:
-            enhanced_context = enhanced_context[:4000]
-        elif len(enhanced_context) < 200:
+        if len(enhanced_context) < 200:
             # If layout extraction yielded too little, fall back to raw text
-            enhanced_context = raw_text[:4000]
+            enhanced_context = raw_text
 
         return enhanced_context
 
@@ -420,6 +419,24 @@ class ContractInferenceService:
         # Step 1: Extract text and page data
         raw_text, page_data = self.extract_text_from_pdf(file_path)
 
+        # Apply Input Guardrails before processing the contract
+        input_validation = guardrail_service.validate_input(raw_text)
+        if not input_validation.is_valid and settings.GUARDRAILS_STRICT_MODE:
+            logger.warning(f"Contract {file_path} rejected by Guardrails AI due to security violations.")
+            return {
+                "raw_text": input_validation.validated_text,
+                "full_text": input_validation.validated_text,
+                "clauses": {},
+                "risk_flags": [{"type": "Security Block", "description": "Contract rejected by Guardrails AI (e.g. Prompt Injection detected).", "severity": "High", "reasoning": "Input validation failed."}],
+                "layout_analysis": {"status": "blocked"},
+                "pages_analyzed": len(page_data),
+                "layout_status": "blocked",
+                "ocr_pages": 0,
+                "obligations": [],
+                "impact_assessment": [],
+                "compliance_report": f"⚠️ **Processing Blocked**: {input_validation.validated_text}"
+            }
+
         # Step 2: Run LayoutLMv3 layout analysis
         layout_results = self.analyze_layout(page_data)
 
@@ -428,9 +445,9 @@ class ContractInferenceService:
 
         # Step 4: Extract clauses using fine-tuned Legal-BERT (with LLM fallback)
         if self.bert_model and self.bert_tokenizer:
-            extracted_clauses = self._extract_clauses_with_legal_bert(raw_text)
+            extracted_clauses = self._extract_clauses_with_legal_bert(enhanced_context)
         else:
-            extracted_clauses = self._extract_clauses_with_llm(raw_text)
+            extracted_clauses = self._extract_clauses_with_llm(enhanced_context)
 
         # Step 6: Generate risk flags
         risk_flags = self._generate_risk_flags(extracted_clauses, layout_results)
@@ -440,16 +457,23 @@ class ContractInferenceService:
         
         # Step 8: Multi-Agent Pipeline (Obligations -> Impact -> Report)
         try:
-            obligations = self._extract_obligations_with_agent(raw_text)
+            obligations = self._extract_obligations_with_agent(enhanced_context)
             impact_assessment = self._assess_impact_with_agent(obligations)
+            compliance_report = self._generate_compliance_report_with_agent(
+                enhanced_context, obligations, impact_assessment
+            )
         except Exception:
             # Fallback to LLM if agent initialization fails
-            obligations = self._extract_obligations_with_llm(raw_text)
+            obligations = self._extract_obligations_with_llm(enhanced_context)
             impact_assessment = self._assess_impact_with_llm(obligations)
-            
-        compliance_report = self._generate_compliance_report_with_llm(
-            raw_text[:1000], obligations, impact_assessment
-        )
+            compliance_report = self._generate_compliance_report_with_llm(
+                enhanced_context, obligations, impact_assessment
+            )
+
+        # Apply guardrails to the compliance report
+        if compliance_report:
+            validation = guardrail_service.validate_output(compliance_report)
+            compliance_report = validation.validated_text
 
         return {
             "raw_text": raw_text[:500] + "... (truncated)" if len(raw_text) > 500 else raw_text,
@@ -722,10 +746,9 @@ class ContractInferenceService:
         system_prompt = OBLIGATION_EXTRACTOR_SYSTEM_PROMPT + "\n\nOutput strictly as a JSON array of objects with keys: Text, Severity, Deadline, Affected Entity, Category, Reasoning (XAI explanation: why this text is a mandatory compliance obligation). Do NOT include markdown."
         
         try:
-            # We truncate the text slightly to avoid context limits, focusing on the first 6000 chars which usually contain core obligations
             response = self.llm.invoke([
                 SystemMessage(content=system_prompt),
-                HumanMessage(content=f"Extract obligations from this document:\n\n{text[:6000]}")
+                HumanMessage(content=f"Extract obligations from this document:\n\n{text}")
             ])
             content = response.content.strip()
             import re
@@ -798,6 +821,19 @@ class ContractInferenceService:
         except Exception as e:
             logger.error(f"Error during Compliance Reporting: {e}")
             return "Error generating compliance report."
+
+    def _generate_compliance_report_with_agent(self, summary_text: str, obligations: List[Dict], impacts: List[Dict]) -> str:
+        """Runs the autonomous Compliance Reporter Agent to synthesize a report."""
+        if not hasattr(self, 'llm') or not self.llm:
+            return "Compliance report could not be generated."
+        try:
+            from .agents.compliance_reporter import ComplianceReporterAgent
+            import asyncio
+            agent = ComplianceReporterAgent()
+            return asyncio.run(agent.invoke_agent(self.llm, summary_text, obligations, impacts))
+        except Exception as e:
+            logger.error(f"Error invoking ComplianceReporterAgent: {e}")
+            return self._generate_compliance_report_with_llm(summary_text, obligations, impacts)
 
     def _compile_layout_summary(self, layout_results: Dict[str, Any]) -> Dict[str, Any]:
         """Compile a summary of the layout analysis for storage."""

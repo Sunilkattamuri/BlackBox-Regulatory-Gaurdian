@@ -29,6 +29,9 @@ dependencies = [
     "langchain-google-genai>=1.0.0",
     "langgraph>=1.1.8",
     "ragas>=0.1.1",
+    "arize-phoenix>=19.0.0",
+    "openinference-instrumentation-langchain>=0.1.0",
+    "mlflow>=2.15.0",
     # --- MCP ---
     "fastmcp>=3.2.4",
     # --- Guardrails ---

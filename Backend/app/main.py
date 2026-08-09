@@ -14,6 +14,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# --- Phoenix Tracing Setup ---
+try:
+    from phoenix.otel import register
+    from openinference.instrumentation.langchain import LangChainInstrumentor
+
+    # Note: Ensure Phoenix server (phoenix serve) is running locally
+    tracer_provider = register(
+        project_name="regulatory-guardian-app",
+        endpoint="http://127.0.0.1:4317" # Default Phoenix OTLP grpc port
+    )
+    LangChainInstrumentor().instrument(tracer_provider=tracer_provider)
+    logger.info("LangChain tracing instrumented via Phoenix (OpenInference)")
+except Exception as e:
+    logger.warning(f"Failed to initialize Phoenix tracing: {e}")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

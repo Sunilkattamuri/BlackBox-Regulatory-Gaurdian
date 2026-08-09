@@ -77,3 +77,26 @@ class ComplianceReporterAgent:
             "capabilities": self.capabilities,
             "tools": self.tool_names,
         }
+
+    async def invoke_agent(self, llm, summary_text: str, obligations: list, impacts: list) -> str:
+        """Invokes the Compliance Reporter agent autonomously with tool access."""
+        from app.services.mcp_server import get_all_mcp_tools
+        from langchain_core.messages import HumanMessage
+        from langgraph.prebuilt import create_react_agent
+        import json
+
+        tools = get_all_mcp_tools().get("compliance", [])
+        
+        system_prompt = self.system_prompt + "\n\nOutput the final report in clean markdown format."
+        
+        try:
+            agent_executor = create_react_agent(llm, tools, prompt=system_prompt)
+            result = await agent_executor.ainvoke({
+                "messages": [HumanMessage(content=f"Generate a compliance report based on this summary:\n{summary_text}\n\nObligations:\n{json.dumps(obligations)}\n\nImpacts:\n{json.dumps(impacts)}")]
+            })
+            
+            return result["messages"][-1].content.strip()
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Error during Compliance Reporter Agent execution: {e}")
+            raise

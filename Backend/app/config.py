@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     # --- Guardrails Configuration ---
     GUARDRAILS_STRICT_MODE: bool = True
     GUARDRAILS_LOG_VIOLATIONS: bool = True
-    GUARDRAILS_BLOCK_ON_FAILURE: bool = False  # If True, blocks output; else appends warning
+    GUARDRAILS_BLOCK_ON_FAILURE: bool = True  # If True, blocks output; else appends warning
 
     # --- MCP Server Configuration ---
     MCP_SERVER_HOST: str = "localhost"

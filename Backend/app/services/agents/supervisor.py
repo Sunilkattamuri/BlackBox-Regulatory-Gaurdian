@@ -9,6 +9,7 @@ import operator
 
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import MemorySaver
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,8 @@ class SupervisorGraph:
             "impact_assessor": ImpactAssessorAgent(),
             "compliance_reporter": ComplianceReporterAgent(),
         }
+        
+        self.memory = MemorySaver()
 
         self.graph = self._build_graph()
 
@@ -402,7 +405,7 @@ class SupervisorGraph:
         workflow.add_edge("compliance_reporter", END)
 
 
-        return workflow.compile()
+        return workflow.compile(checkpointer=self.memory)
 
     def build_full_pipeline_graph(self) -> Any:
         """
@@ -499,7 +502,7 @@ class SupervisorGraph:
         workflow.add_edge("assess", "report")
         workflow.add_edge("report", END)
 
-        return workflow.compile()
+        return workflow.compile(checkpointer=self.memory)
 
     def _route_query(self, query: str) -> str:
         """Determine which specialist agent should handle a query."""

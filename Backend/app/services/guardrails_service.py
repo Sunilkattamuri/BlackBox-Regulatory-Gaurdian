@@ -116,34 +116,56 @@ class GuardrailsService:
             logger.error(f"Input validation error: {e}")
             warnings.append(f"Input validation encountered an error: {str(e)}")
 
-        # Basic prompt injection detection
-        injection_patterns = [
-            "ignore previous instructions",
-            "ignore all instructions",
-            "disregard your instructions",
-            "you are now",
-            "pretend you are",
-            "act as if",
-            "override your",
-            "forget your training",
-            "system prompt",
-        ]
-
-        text_lower = text.lower()
-        for pattern in injection_patterns:
-            if pattern in text_lower:
+        # Prompt injection detection using llm-guard
+        try:
+            from llm_guard.input_scanners import PromptInjection, Toxicity
+            from llm_guard.input_scanners.prompt_injection import MatchType
+            
+            # Initialize scanners once and cache them on the service
+            if not hasattr(self, '_pi_scanner'):
+                logger.info("Initializing llm-guard PromptInjection scanner...")
+                self._pi_scanner = PromptInjection(threshold=0.5, match_type=MatchType.FULL)
+            if not hasattr(self, '_toxicity_scanner'):
+                logger.info("Initializing llm-guard Toxicity scanner...")
+                self._toxicity_scanner = Toxicity(threshold=0.5)
+                
+            # Scan for Prompt Injection
+            sanitized_prompt, pi_is_valid, pi_risk_score = self._pi_scanner.scan(text)
+            if not pi_is_valid:
                 violations.append({
                     "validator": "injection_detector",
                     "type": "prompt_injection_attempt",
-                    "pattern": pattern,
+                    "risk_score": pi_risk_score,
                 })
                 if self.block_on_failure:
-                    validated_text = "[Input blocked: potential prompt injection detected]"
+                    validated_text = "I cannot process this request as it appears to contain unauthorized instructions or prompt injection attempts. Please rephrase your query to align with standard regulatory inquiries."
                 else:
                     warnings.append(
                         "⚠️ Potential prompt injection pattern detected. Proceeding with caution."
                     )
-                break
+                    
+            # Scan for Toxicity/Profanity
+            if pi_is_valid: # Only run toxicity if it passed injection check
+                sanitized_prompt, tox_is_valid, tox_risk_score = self._toxicity_scanner.scan(text)
+                if not tox_is_valid:
+                    violations.append({
+                        "validator": "toxicity_detector",
+                        "type": "toxic_input_detected",
+                        "risk_score": tox_risk_score,
+                    })
+                    if self.block_on_failure:
+                        validated_text = "I cannot process this request as it contains toxic, offensive, or inappropriate language. Please maintain a professional tone."
+                    else:
+                        warnings.append(
+                            "⚠️ Toxic language detected. Proceeding with caution."
+                        )
+                        
+        except ImportError:
+            logger.error("llm-guard is not installed. Skipping semantic injection detection.")
+            warnings.append("Semantic injection detection is disabled (llm-guard missing).")
+        except Exception as e:
+            logger.error(f"Error running PromptInjection scanner: {e}")
+            warnings.append(f"Prompt injection scanning encountered an error: {str(e)}")
 
         is_valid = len(violations) == 0
 
